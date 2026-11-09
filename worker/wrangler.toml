@@ -1,0 +1,11 @@
+name = "aranet"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+# Personal account (jackweatherilt@outlook.com). Never deploy this to a work account.
+account_id = "80361e3fab178ff954084fe277b9d824"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "aranet"
+database_id = "0bd5907a-48f2-4895-b672-ce66ef1931b9"

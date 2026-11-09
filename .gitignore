@@ -1,0 +1,10 @@
+# Secrets and personal data — never commit
+.secrets
+history.csv
+*.csv
+firmware/include/secrets.h
+
+# Tooling
+.venv/
+__pycache__/
+.DS_Store

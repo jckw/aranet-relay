@@ -12,3 +12,9 @@ CREATE TABLE IF NOT EXISTS bridge (
   last_seen INTEGER NOT NULL,      -- unix seconds of the bridge's last post
   rssi INTEGER
 );
+CREATE TABLE IF NOT EXISTS power (
+  ts INTEGER PRIMARY KEY,          -- unix seconds when the Worker received the sample
+  watts REAL NOT NULL,             -- instantaneous draw, W
+  energy REAL NOT NULL,            -- plug's cumulative counter, Wh (can reset on plug reboot)
+  output INTEGER NOT NULL          -- relay on (1) or off (0)
+);

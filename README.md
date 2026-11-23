@@ -7,6 +7,7 @@ measurement to a Cloudflare Worker, which stores it in D1. An iOS app reads it b
 
 ```
 Aranet4 ──BLE broadcast──▶ ESP32 (firmware/) ──HTTPS──▶ Cloudflare Worker + D1 (worker/) ──▶ app
+                     Shelly Plug (shelly/) ──HTTPS──▶ ┘
 ```
 
 ## firmware/
@@ -35,7 +36,8 @@ If Wi-Fi fails, the serial log lists the 2.4 GHz networks the board can see.
 | --- | --- | --- |
 | `POST /ingest` | `INGEST_TOKEN` | One live reading from the bridge. Repeat broadcasts of the same measurement are stored once. |
 | `POST /import` | `INGEST_TOKEN` | Bulk rows from the sensor's on-board log. |
-| `GET /readings?hours=24` | `READ_TOKEN` | Latest reading, battery, bridge last-seen, and the series. |
+| `POST /power` | `POWER_TOKEN` | One sample from the heater's Shelly plug: `{watts, energy, on}`. |
+| `GET /readings?hours=24` | `READ_TOKEN` | Latest reading, battery, bridge last-seen, the series, and heater power (watts series, energy used in the range). |
 
 ```sh
 cd worker && npm install
@@ -43,8 +45,16 @@ npx wrangler d1 create aranet                     # put the id in wrangler.toml
 npx wrangler d1 execute aranet --remote --file schema.sql
 npx wrangler secret put INGEST_TOKEN
 npx wrangler secret put READ_TOKEN
+npx wrangler secret put POWER_TOKEN
 npx wrangler deploy
 ```
+
+## shelly/
+
+`power.js` runs on the Shelly Plug US Gen4 the heater is plugged into. Every minute it posts the current draw
+and the plug's cumulative energy counter to `/power`. It only makes outbound requests, so the router needs no changes.
+Open the plug's IP in a browser, go to **Scripts → Create script**, paste it in with the real `POWER_TOKEN`,
+save, start, and turn on **Run on startup**.
 
 ## tools/
 

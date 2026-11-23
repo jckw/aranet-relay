@@ -2,12 +2,14 @@
 //
 //   POST /ingest   (INGEST_TOKEN)  one live broadcast from the bridge
 //   POST /import   (INGEST_TOKEN)  bulk rows from the sensor's on-board log
-//   GET  /readings (READ_TOKEN)    latest reading + series for the last N hours
+//   POST /power    (POWER_TOKEN)   one sample from the heater's Shelly plug
+//   GET  /readings (READ_TOKEN)    latest reading + series for the last N hours, plus heater power
 
 interface Env {
   DB: D1Database;
   INGEST_TOKEN: string;
   READ_TOKEN: string;
+  POWER_TOKEN: string;
 }
 
 type Reading = { ts: number; temperature: number; humidity: number; pressure: number; co2: number; battery?: number | null };
@@ -71,20 +73,51 @@ async function importRows(req: Request, env: Env): Promise<Response> {
   return json({ received: rows.length, inserted });
 }
 
+async function power(req: Request, env: Env): Promise<Response> {
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!body) return json({ error: 'Body must be JSON.' }, 400);
+  const { watts, energy, on } = body;
+  // The meter can read a watt or two negative at idle; anything far outside a 15 A plug's range is garbage.
+  if (!isNum(watts, -50, 4000) || !isNum(energy, 0, 1e10) || typeof on !== 'boolean') {
+    return json({ error: 'Send {watts, energy, on}.' }, 400);
+  }
+  const ts = Math.floor(Date.now() / 1000);
+  await env.DB.prepare('INSERT OR REPLACE INTO power (ts, watts, energy, output) VALUES (?1, ?2, ?3, ?4)')
+    .bind(ts, Math.max(0, watts), energy, on ? 1 : 0).run();
+  return json({ stored: true, ts });
+}
+
 async function readings(url: URL, env: Env): Promise<Response> {
   const hours = Math.min(Math.max(Number(url.searchParams.get('hours')) || 24, 1), 24 * 31);
   const since = Math.floor(Date.now() / 1000) - hours * 3600;
-  const [series, latest, battery, bridge] = await Promise.all([
+  // The plug posts every minute; past a day, average into 10-minute buckets to keep the payload small.
+  const bucket = hours <= 24 ? 60 : 600;
+  const [series, latest, battery, bridge, powerSeries, powerLatest, energy] = await Promise.all([
     env.DB.prepare('SELECT ts, temperature, humidity, pressure, co2 FROM readings WHERE ts >= ?1 ORDER BY ts').bind(since).all(),
     env.DB.prepare('SELECT ts, temperature, humidity, pressure, co2 FROM readings ORDER BY ts DESC LIMIT 1').first(),
     env.DB.prepare('SELECT battery FROM readings WHERE battery IS NOT NULL ORDER BY ts DESC LIMIT 1').first<{ battery: number }>(),
     env.DB.prepare('SELECT last_seen, rssi FROM bridge WHERE id = 1').first<{ last_seen: number; rssi: number | null }>(),
+    // bucket is one of two constants, inlined so SQLite does integer division (bound numbers arrive as REAL).
+    env.DB.prepare(`SELECT (ts / ${bucket}) * ${bucket} AS ts, ROUND(AVG(watts), 1) AS watts FROM power WHERE ts >= ?1 GROUP BY ts / ${bucket} ORDER BY 1`)
+      .bind(since).all(),
+    env.DB.prepare('SELECT ts, watts, output FROM power ORDER BY ts DESC LIMIT 1').first<{ ts: number; watts: number; output: number }>(),
+    // Sum the counter's increases. A drop means the plug rebooted and restarted from zero, so count its new value.
+    env.DB.prepare(`SELECT COALESCE(SUM(CASE WHEN d >= 0 THEN d ELSE energy END), 0) AS wh
+      FROM (SELECT energy, energy - LAG(energy) OVER (ORDER BY ts) AS d FROM power WHERE ts >= ?1) WHERE d IS NOT NULL`)
+      .bind(since).first<{ wh: number }>(),
   ]);
   return json({
     latest,
     battery: battery?.battery ?? null,
     bridge: bridge ? { lastSeen: bridge.last_seen, rssi: bridge.rssi } : null,
     readings: series.results,
+    power: powerLatest
+      ? {
+          latest: { ts: powerLatest.ts, watts: powerLatest.watts, on: powerLatest.output === 1 },
+          energyWh: Math.round((energy?.wh ?? 0) * 10) / 10,
+          readings: powerSeries.results,
+        }
+      : null,
   });
 }
 
@@ -95,6 +128,10 @@ export default {
     if (route === 'POST /ingest' || route === 'POST /import') {
       if (!authorized(req, env.INGEST_TOKEN)) return json({ error: 'Unauthorized' }, 401);
       return route === 'POST /ingest' ? ingest(req, env) : importRows(req, env);
+    }
+    if (route === 'POST /power') {
+      if (!authorized(req, env.POWER_TOKEN)) return json({ error: 'Unauthorized' }, 401);
+      return power(req, env);
     }
     if (route === 'GET /readings') {
       if (!authorized(req, env.READ_TOKEN)) return json({ error: 'Unauthorized' }, 401);
